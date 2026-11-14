@@ -81,6 +81,33 @@ def fetch(user, pw, days=2, limit=40):
     return out
 
 
+def hour_label(h):
+    return f"{h % 12 or 12} {'ص' if h < 12 else 'م'}"
+
+
+def fmt(v):
+    return '—' if v is None else f'{v:.2f}'
+
+
+def delta(cur, prev):
+    if cur is None or prev is None: return ''
+    d = round((cur - prev) * 100)
+    if d == 0: return ' (ثابت)'
+    return f' (▲{d} سم)' if d > 0 else f' (▼{-d} سم)'
+
+
+def notify_block(readings):
+    """نص الإشعار اللي التطبيق بيعرضه لما قراءة جديدة توصل."""
+    if not readings: return None
+    L = readings[0]; P = readings[1] if len(readings) > 1 else None
+    dd = L['d'][8:10] + '/' + L['d'][5:7]
+    return {
+        'k': L['k'],
+        'title': f"فم الملاح — الخلف {fmt(L['b'])}{delta(L['b'], P and P['b'])}",
+        'text': f"قراءة الساعة {hour_label(L['h'])} ({dd})\nالخلف {fmt(L['b'])}{delta(L['b'], P and P['b'])} · الأمام {fmt(L['f'])}",
+    }
+
+
 def merge(new):
     try: cur = json.load(open(DATA, encoding='utf-8'))
     except FileNotFoundError: cur = {'site': SITE, 'readings': []}
@@ -91,10 +118,14 @@ def merge(new):
     cutoff = (datetime.now(CAIRO) - timedelta(days=7)).strftime('%Y-%m-%d_%H')
     keep = {k: v for k, v in by.items() if k >= cutoff}
     if len(keep) != len(by): changed = True
+    readings = sorted(keep.values(), key=lambda r: r['k'], reverse=True)
+    nb = notify_block(readings)
+    if cur.get('notify') != nb: changed = True
     if not changed: return False
     cur['site'] = SITE
     cur['updated'] = datetime.now(CAIRO).isoformat(timespec='seconds')
-    cur['readings'] = sorted(keep.values(), key=lambda r: r['k'], reverse=True)
+    cur['readings'] = readings
+    cur['notify'] = nb
     with open(DATA, 'w', encoding='utf-8') as f:
         json.dump(cur, f, ensure_ascii=False, indent=1); f.write('\n')
     return True
