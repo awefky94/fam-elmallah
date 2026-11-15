@@ -1,12 +1,17 @@
 name: تحديث قراءات فم الملاح
 
+# الأكشن ده شغال لوحده على طول:
+# كل تشغيلة بتفضل ~5 ساعات ونص تشيّك على ياهو كل 3 دقايق،
+# وفي الآخر بتشغّل التشغيلة اللي بعدها بنفسها.
+# جدول GitHub (كل 3 ساعات) احتياطي يرجّع السلسلة لو وقفت لأي سبب.
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '17 */3 * * *'
   workflow_dispatch:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: update-readings
@@ -15,20 +20,35 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch readings from Yahoo
+      - name: Fetch readings from Yahoo (every 3 min)
+        timeout-minutes: 335
         env:
           YAHOO_USER: ${{ secrets.YAHOO_USER }}
           YAHOO_APP_PASSWORD: ${{ secrets.YAHOO_APP_PASSWORD }}
-        run: python3 scripts/fetch_readings.py
-      - name: Commit if changed
         run: |
-          if git diff --quiet data.json; then echo "no change"; exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data.json
-          git commit -m "Update readings $(python3 -c "import json;print(json.load(open('data.json'))['readings'][0]['k'])")"
-          git pull --rebase -q origin main || true
-          git push
+          end=$((SECONDS + 320*60))
+          n=0
+          while [ $SECONDS -lt $end ]; do
+            if [ $n -eq 0 ]; then L=40; else L=4; fi
+            echo "::group::check $n ($(TZ=Africa/Cairo date +%H:%M))"
+            FETCH_LIMIT=$L python3 scripts/fetch_readings.py || echo "fetch failed"
+            if ! git diff --quiet data.json; then
+              git add data.json
+              git commit -q -m "Update readings $(python3 -c "import json;print(json.load(open('data.json'))['readings'][0]['k'])")"
+              git pull --rebase -q origin main || true
+              git push -q || echo "push failed"
+            fi
+            echo "::endgroup::"
+            n=$((n+1))
+            sleep 180
+          done
+      - name: Start next run
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run update.yml --ref main -R ${{ github.repository }}

@@ -136,6 +136,7 @@ if __name__ == '__main__':
         print(parse_html(open(sys.argv[1], encoding='utf-8').read())); sys.exit()
     pw = os.environ.get('YAHOO_APP_PASSWORD')
     if not pw: sys.exit('YAHOO_APP_PASSWORD secret is missing')
-    rows = fetch(os.environ.get('YAHOO_USER') or 'gharbiadir@yahoo.com', pw)
+    lim = int(os.environ.get('FETCH_LIMIT') or 40)
+    rows = fetch(os.environ.get('YAHOO_USER') or 'gharbiadir@yahoo.com', pw, days=2 if lim > 10 else 1, limit=lim)
     print(f'found {len(rows)} readings; latest:', max(rows, key=lambda r: r['k']) if rows else None)
     print('updated' if merge(rows) else 'no change')
