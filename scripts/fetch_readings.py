@@ -1,5 +1,6 @@
-"""يقرا إيميلات «Telemetry Mail» من ياهو (IMAP) ويطلّع صف «فم الملاح» من الملف المرفق،
-ويحدّث data.json (آخر 7 أيام، من الأحدث للأقدم).
+"""يقرا إيميلات «Telemetry Mail» من ياهو (IMAP) ويطلّع صفوف المواقع من الملف المرفق:
+  «فم الملاح» -> data.json   ·   «حجز صرد» -> sard.json
+(آخر 7 أيام، من الأحدث للأقدم).
 
 المتغيرات المطلوبة (GitHub Actions secrets):
   YAHOO_USER          إيميل ياهو (افتراضي gharbiadir@yahoo.com)
@@ -10,8 +11,16 @@ from datetime import datetime, timedelta, timezone
 from email.header import decode_header
 from html.parser import HTMLParser
 
-SITE = 'فم الملاح'
-DATA = os.path.join(os.path.dirname(__file__), '..', 'data.json')
+ROOT = os.path.join(os.path.dirname(__file__), '..')
+# الاسم المعروض، الملف، ودالة بتعرف الصف (الاسم في الإيميل ممكن يختلف في المسافات/الهمزات)
+def norm(t):
+    t = (t or '').replace('\u0640', '')
+    for a, b in (('أ', 'ا'), ('إ', 'ا'), ('آ', 'ا'), ('ة', 'ه'), ('ى', 'ي')): t = t.replace(a, b)
+    return ''.join(t.split())
+SITES = [
+    {'name': 'فم الملاح', 'file': 'data.json', 'match': lambda n: n == norm('فم الملاح')},
+    {'name': 'حجز صرد', 'file': 'sard.json', 'match': lambda n: 'صرد' in n},
+]
 CAIRO = timezone(timedelta(hours=2))
 
 
@@ -37,16 +46,30 @@ def num(t):
     return None if v >= 100 else v
 
 
+def row_reading(c):
+    try: h = int(c[2])
+    except ValueError: return None
+    d = c[3]
+    if len(d) != 10 or not 0 <= h <= 23: return None
+    return {'k': f'{d}_{h:02d}', 'd': d, 'h': h, 'f': num(c[4]), 'b': num(c[5])}
+
+
 def parse_html(text):
-    p = Rows(); p.feed(text)
+    """بيرجع {اسم الموقع: قراءة} لكل المواقع اللي في SITES."""
+    p = Rows(); p.feed(text); out = {}
     for c in p.rows:
-        if len(c) >= 6 and c[1] == SITE:
-            try: h = int(c[2])
-            except ValueError: return None
-            d = c[3]
-            if len(d) != 10 or not 0 <= h <= 23: return None
-            return {'k': f'{d}_{h:02d}', 'd': d, 'h': h, 'f': num(c[4]), 'b': num(c[5])}
-    return None
+        if len(c) < 6: continue
+        n = norm(c[1])
+        for st in SITES:
+            if st['name'] in out or not st['match'](n): continue
+            r = row_reading(c)
+            if r: out[st['name']] = r
+    return out
+
+
+def all_names(text):
+    p = Rows(); p.feed(text)
+    return [c[1] for c in p.rows if len(c) >= 6]
 
 
 def html_parts(msg):
@@ -69,14 +92,17 @@ def fetch(user, pw, days=2, limit=40):
     since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime('%d-%b-%Y')
     typ, ids = m.search(None, 'SINCE', since, 'SUBJECT', '"Telemetry Mail"')
     ids = ids[0].split()[-limit:]
-    out = []
+    out = {st['name']: [] for st in SITES}; shown = False
     for i in ids:
         typ, data = m.fetch(i, '(BODY.PEEK[])')
         if typ != 'OK' or not data or not data[0]: continue
         msg = email.message_from_bytes(data[0][1])
         for html in html_parts(msg):
-            r = parse_html(html)
-            if r: out.append(r); break
+            got = parse_html(html)
+            if not shown and len(got) < len(SITES):
+                print('names in file:', ' | '.join(all_names(html))); shown = True
+            for k, r in got.items(): out[k].append(r)
+            if got: break
     m.logout()
     return out
 
@@ -96,21 +122,22 @@ def delta(cur, prev):
     return f' (▲{d} سم)' if d > 0 else f' (▼{-d} سم)'
 
 
-def notify_block(readings):
+def notify_block(readings, site):
     """نص الإشعار اللي التطبيق بيعرضه لما قراءة جديدة توصل."""
     if not readings: return None
     L = readings[0]; P = readings[1] if len(readings) > 1 else None
     dd = L['d'][8:10] + '/' + L['d'][5:7]
     return {
         'k': L['k'],
-        'title': f"فم الملاح — الخلف {fmt(L['b'])}{delta(L['b'], P and P['b'])}",
+        'title': f"{site} — الخلف {fmt(L['b'])}{delta(L['b'], P and P['b'])}",
         'text': f"قراءة الساعة {hour_label(L['h'])} ({dd})\nالخلف {fmt(L['b'])}{delta(L['b'], P and P['b'])} · الأمام {fmt(L['f'])}",
     }
 
 
-def merge(new):
+def merge(new, site, fname):
+    DATA = os.path.join(ROOT, fname)
     try: cur = json.load(open(DATA, encoding='utf-8'))
-    except FileNotFoundError: cur = {'site': SITE, 'readings': []}
+    except FileNotFoundError: cur = {'site': site, 'readings': []}
     by = {r['k']: r for r in cur.get('readings', [])}
     changed = False
     for r in new:
@@ -119,10 +146,10 @@ def merge(new):
     keep = {k: v for k, v in by.items() if k >= cutoff}
     if len(keep) != len(by): changed = True
     readings = sorted(keep.values(), key=lambda r: r['k'], reverse=True)
-    nb = notify_block(readings)
+    nb = notify_block(readings, site)
     if cur.get('notify') != nb: changed = True
     if not changed: return False
-    cur['site'] = SITE
+    cur['site'] = site
     cur['updated'] = datetime.now(CAIRO).isoformat(timespec='seconds')
     cur['readings'] = readings
     cur['notify'] = nb
@@ -138,5 +165,7 @@ if __name__ == '__main__':
     if not pw: sys.exit('YAHOO_APP_PASSWORD secret is missing')
     lim = int(os.environ.get('FETCH_LIMIT') or 40)
     rows = fetch(os.environ.get('YAHOO_USER') or 'gharbiadir@yahoo.com', pw, days=2 if lim > 10 else 1, limit=lim)
-    print(f'found {len(rows)} readings; latest:', max(rows, key=lambda r: r['k']) if rows else None)
-    print('updated' if merge(rows) else 'no change')
+    for st in SITES:
+        rs = rows[st['name']]
+        print(f"{st['name']}: found {len(rs)} readings; latest:", max(rs, key=lambda r: r['k']) if rs else None)
+        print('  ', 'updated' if merge(rs, st['name'], st['file']) else 'no change')

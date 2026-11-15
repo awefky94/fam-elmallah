@@ -1,4 +1,4 @@
-name: تحديث قراءات فم الملاح
+name: تحديث قراءات فم الملاح وحجز صرد
 
 # الأكشن ده شغال لوحده على طول:
 # كل تشغيلة بتفضل ~5 ساعات ونص تشيّك على ياهو كل 3 دقايق،
@@ -37,8 +37,8 @@ jobs:
             if [ $n -eq 0 ]; then L=40; else L=4; fi
             echo "::group::check $n ($(TZ=Africa/Cairo date +%H:%M))"
             FETCH_LIMIT=$L python3 scripts/fetch_readings.py || echo "fetch failed"
-            if ! git diff --quiet data.json; then
-              git add data.json
+            if [ -n "$(git status --porcelain data.json sard.json)" ]; then
+              git add data.json sard.json
               git commit -q -m "Update readings $(python3 -c "import json;print(json.load(open('data.json'))['readings'][0]['k'])")"
               git pull --rebase -q origin main || true
               git push -q || echo "push failed"
