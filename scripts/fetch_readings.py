@@ -1,5 +1,6 @@
 """يقرا إيميلات «Telemetry Mail» من ياهو (IMAP) ويطلّع صفوف المواقع من الملف المرفق:
-  «فم الملاح» -> data.json   ·   «حجز صرد» -> sard.json
+  «فم الملاح» -> data.json · «حجز صرد» -> sard.json · «حجز بلتاج» -> beltag.json
+  + qotour.json (إشعار مشترك لصرد وبلتاج لتطبيق «مناسيب قطور»)
 (آخر 7 أيام، من الأحدث للأقدم).
 
 المتغيرات المطلوبة (GitHub Actions secrets):
@@ -20,7 +21,10 @@ def norm(t):
 SITES = [
     {'name': 'فم الملاح', 'file': 'data.json', 'match': lambda n: n == norm('فم الملاح')},
     {'name': 'حجز صرد', 'file': 'sard.json', 'match': lambda n: 'صرد' in n},
+    {'name': 'حجز بلتاج', 'file': 'beltag.json', 'match': lambda n: 'بلتاج' in n},
 ]
+# ملف إشعار تطبيق «مناسيب قطور» (حجز صرد + حجز بلتاج في إشعار واحد)
+GROUP = {'file': 'qotour.json', 'title': 'مناسيب قطور', 'sites': ['حجز صرد', 'حجز بلتاج']}
 CAIRO = timezone(timedelta(hours=2))
 
 
@@ -158,6 +162,32 @@ def merge(new, site, fname):
     return True
 
 
+def write_group():
+    """qotour.json: آخر قراءة لكل حجز في إشعار واحد؛ المفتاح بيتغير لما أي حجز ييجي له قراءة جديدة."""
+    keys, titles, lines = [], [], []
+    for name in GROUP['sites']:
+        st = next(x for x in SITES if x['name'] == name)
+        try: d = json.load(open(os.path.join(ROOT, st['file']), encoding='utf-8'))
+        except FileNotFoundError: continue
+        nb = d.get('notify')
+        if not nb: continue
+        keys.append(nb['k'])
+        R = d['readings']; L = R[0]; P = R[1] if len(R) > 1 else None
+        short = name.replace('حجز ', '')
+        titles.append(f"{short} {fmt(L['b'])}")
+        dd = L['d'][8:10] + '/' + L['d'][5:7]
+        lines.append(f"{name}: الخلف {fmt(L['b'])}{delta(L['b'], P and P['b'])} · الساعة {hour_label(L['h'])} ({dd})")
+    if not keys: return False
+    nb = {'k': '|'.join(keys), 'title': f"{GROUP['title']} — " + ' · '.join(titles), 'text': '\n'.join(lines)}
+    path = os.path.join(ROOT, GROUP['file'])
+    try: cur = json.load(open(path, encoding='utf-8'))
+    except FileNotFoundError: cur = {}
+    if cur.get('notify') == nb: return False
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump({'updated': datetime.now(CAIRO).isoformat(timespec='seconds'), 'notify': nb}, f, ensure_ascii=False, indent=1); f.write('\n')
+    return True
+
+
 if __name__ == '__main__':
     if len(sys.argv) > 1:  # اختبار: python fetch_readings.py file.html
         print(parse_html(open(sys.argv[1], encoding='utf-8').read())); sys.exit()
@@ -169,3 +199,4 @@ if __name__ == '__main__':
         rs = rows[st['name']]
         print(f"{st['name']}: found {len(rs)} readings; latest:", max(rs, key=lambda r: r['k']) if rs else None)
         print('  ', 'updated' if merge(rs, st['name'], st['file']) else 'no change')
+    print('qotour:', 'updated' if write_group() else 'no change')
