@@ -71,12 +71,18 @@ def parse_html(text):
     return out
 
 
+def akey(name):
+    """مفتاح القنطرة في all.json: «حجز الراهبين» و«الراهبين» نفس القنطرة."""
+    n = norm(name)
+    return n[3:] if n.startswith('حجز') and len(n) > 3 else n
+
+
 def parse_all(text):
     """كل صفوف الإيميل بالترتيب: [(الاسم المعروض, قراءة)] — لصفحة «كل القناطر» (all.json)."""
     p = Rows(); p.feed(text); out = []; seen = set()
     for c in p.rows:
         if len(c) < 6: continue
-        name = ' '.join(c[1].split()); n = norm(name)
+        name = ' '.join(c[1].split()); n = akey(name)
         if not n or n in seen: continue
         r = row_reading(c)
         if r: seen.add(n); out.append((name, r))
@@ -121,7 +127,7 @@ def fetch(user, pw, days=2, limit=40):
             for k, r in got.items(): out[k].append(r)
             try:  # جزء «كل القناطر» — أي خطأ فيه ميأثرش على الملفات القديمة
                 for i2, (name, r) in enumerate(parse_all(html)):
-                    e = allr.setdefault(norm(name), {'name': name, 'order': i2, 'readings': []})
+                    e = allr.setdefault(akey(name), {'name': name, 'order': i2, 'readings': []})
                     e['readings'].append(r)
             except Exception as ex: print('all.json parse error:', ex)
             if got: break
@@ -211,10 +217,15 @@ def merge_all(allr, hours=48):
     path = os.path.join(ROOT, 'all.json')
     try: cur = json.load(open(path, encoding='utf-8'))
     except FileNotFoundError: cur = {'sites': []}
-    sites = {norm(x['name']): x for x in cur.get('sites', [])}
+    sites = {}
+    for x in cur.get('sites', []):
+        y = sites.setdefault(akey(x['name']), {'name': x['name'], 'order': x['order'], 'readings': []})
+        if len(x['name']) > len(y['name']): y['name'] = x['name']
+        y['readings'] += x['readings']
     for n, e in allr.items():
         x = sites.setdefault(n, {'name': e['name'], 'order': e['order'], 'readings': []})
         x['order'] = e['order']
+        if len(e['name']) > len(x['name']): x['name'] = e['name']  # الاسم الأطول (مع «حجز»)
         by = {r['k']: r for r in x['readings']}
         for r in e['readings']: by[r['k']] = r
         x['readings'] = list(by.values())
