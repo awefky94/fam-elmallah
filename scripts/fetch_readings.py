@@ -71,6 +71,18 @@ def parse_html(text):
     return out
 
 
+def parse_all(text):
+    """كل صفوف الإيميل بالترتيب: [(الاسم المعروض, قراءة)] — لصفحة «كل القناطر» (all.json)."""
+    p = Rows(); p.feed(text); out = []; seen = set()
+    for c in p.rows:
+        if len(c) < 6: continue
+        name = ' '.join(c[1].split()); n = norm(name)
+        if not n or n in seen: continue
+        r = row_reading(c)
+        if r: seen.add(n); out.append((name, r))
+    return out
+
+
 def all_names(text):
     p = Rows(); p.feed(text)
     return [c[1] for c in p.rows if len(c) >= 6]
@@ -97,6 +109,7 @@ def fetch(user, pw, days=2, limit=40):
     typ, ids = m.search(None, 'SINCE', since, 'SUBJECT', '"Telemetry Mail"')
     ids = ids[0].split()[-limit:]
     out = {st['name']: [] for st in SITES}; shown = False
+    allr = {}  # norm(name) -> {'name', 'order', 'readings'}
     for i in ids:
         typ, data = m.fetch(i, '(BODY.PEEK[])')
         if typ != 'OK' or not data or not data[0]: continue
@@ -106,9 +119,14 @@ def fetch(user, pw, days=2, limit=40):
             if not shown and len(got) < len(SITES):
                 print('names in file:', ' | '.join(all_names(html))); shown = True
             for k, r in got.items(): out[k].append(r)
+            try:  # جزء «كل القناطر» — أي خطأ فيه ميأثرش على الملفات القديمة
+                for i2, (name, r) in enumerate(parse_all(html)):
+                    e = allr.setdefault(norm(name), {'name': name, 'order': i2, 'readings': []})
+                    e['readings'].append(r)
+            except Exception as ex: print('all.json parse error:', ex)
             if got: break
     m.logout()
-    return out
+    return out, allr
 
 
 def hour_label(h):
@@ -188,15 +206,41 @@ def write_group():
     return True
 
 
+def merge_all(allr, hours=48):
+    """all.json: كل القناطر اللي في الإيميل، آخر 48 ساعة لكل واحدة."""
+    path = os.path.join(ROOT, 'all.json')
+    try: cur = json.load(open(path, encoding='utf-8'))
+    except FileNotFoundError: cur = {'sites': []}
+    sites = {norm(x['name']): x for x in cur.get('sites', [])}
+    for n, e in allr.items():
+        x = sites.setdefault(n, {'name': e['name'], 'order': e['order'], 'readings': []})
+        x['order'] = e['order']
+        by = {r['k']: r for r in x['readings']}
+        for r in e['readings']: by[r['k']] = r
+        x['readings'] = list(by.values())
+    cutoff = (datetime.now(CAIRO) - timedelta(hours=hours)).strftime('%Y-%m-%d_%H')
+    out = []
+    for x in sites.values():
+        x['readings'] = sorted((r for r in x['readings'] if r['k'] >= cutoff), key=lambda r: r['k'], reverse=True)
+        if x['readings']: out.append(x)
+    out.sort(key=lambda x: x['order'])
+    if out == cur.get('sites'): return False
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump({'updated': datetime.now(CAIRO).isoformat(timespec='seconds'), 'sites': out}, f, ensure_ascii=False, separators=(',', ':')); f.write('\n')
+    return True
+
+
 if __name__ == '__main__':
     if len(sys.argv) > 1:  # اختبار: python fetch_readings.py file.html
         print(parse_html(open(sys.argv[1], encoding='utf-8').read())); sys.exit()
     pw = os.environ.get('YAHOO_APP_PASSWORD')
     if not pw: sys.exit('YAHOO_APP_PASSWORD secret is missing')
     lim = int(os.environ.get('FETCH_LIMIT') or 40)
-    rows = fetch(os.environ.get('YAHOO_USER') or 'gharbiadir@yahoo.com', pw, days=2 if lim > 10 else 1, limit=lim)
+    rows, allr = fetch(os.environ.get('YAHOO_USER') or 'gharbiadir@yahoo.com', pw, days=2 if lim > 10 else 1, limit=lim)
     for st in SITES:
         rs = rows[st['name']]
         print(f"{st['name']}: found {len(rs)} readings; latest:", max(rs, key=lambda r: r['k']) if rs else None)
         print('  ', 'updated' if merge(rs, st['name'], st['file']) else 'no change')
     print('qotour:', 'updated' if write_group() else 'no change')
+    try: print(f'all: {len(allr)} sites,', 'updated' if merge_all(allr) else 'no change')
+    except Exception as ex: print('all.json error:', ex)

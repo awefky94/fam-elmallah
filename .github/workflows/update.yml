@@ -37,8 +37,8 @@ jobs:
             if [ $n -eq 0 ]; then L=40; else L=4; fi
             echo "::group::check $n ($(TZ=Africa/Cairo date +%H:%M))"
             FETCH_LIMIT=$L python3 scripts/fetch_readings.py || echo "fetch failed"
-            if [ -n "$(git status --porcelain data.json sard.json beltag.json qotour.json)" ]; then
-              git add data.json sard.json beltag.json qotour.json
+            if [ -n "$(git status --porcelain data.json sard.json beltag.json qotour.json all.json)" ]; then
+              git add data.json sard.json beltag.json qotour.json all.json
               git commit -q -m "Update readings $(python3 -c "import json;print(json.load(open('data.json'))['readings'][0]['k'])")"
               git pull --rebase -q origin main || true
               git push -q || echo "push failed"
